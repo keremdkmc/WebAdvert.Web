@@ -1,12 +1,17 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
+using AutoMapper;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Polly;
+using Polly.Extensions.Http;
+using WebAdvert.Web.ServiceClient;
 using WebAdvert.Web.Services;
 
 namespace WebAdvert.Web
@@ -40,10 +45,31 @@ namespace WebAdvert.Web
                 option.LoginPath = "/Accounts/Login";
             });
 
-            services.AddTransient<IFileUploader, S3FileUploader>();
+            var mappingConfig = new MapperConfiguration(mc =>
+            {
+                mc.AddProfile(new AdvertApiProfile());
+            });
+            IMapper mapper = mappingConfig.CreateMapper();
+            services.AddSingleton(mapper);
 
+            services.AddTransient<IFileUploader, S3FileUploader>();
+            services.AddHttpClient<IAdvertApiClient, AdvertApiClient>().AddPolicyHandler(GetRetryPolicy())
+                .AddPolicyHandler(GetCircuitBreakerPatternPolicy());
             services.AddControllersWithViews();
 
+        }
+
+        private IAsyncPolicy<HttpResponseMessage> GetCircuitBreakerPatternPolicy()
+        {
+            return HttpPolicyExtensions.HandleTransientHttpError()
+                .CircuitBreakerAsync(3, TimeSpan.FromSeconds(30));
+        }
+
+        private IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
+        {
+            return HttpPolicyExtensions.HandleTransientHttpError()
+                .OrResult(msg => msg.StatusCode == System.Net.HttpStatusCode.NotFound)
+                .WaitAndRetryAsync(5,sleepDurationProvider: retryAttempy => TimeSpan.FromSeconds(Math.Pow(2, retryAttempy)));
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
